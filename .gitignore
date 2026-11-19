@@ -1,0 +1,12 @@
+/application/out/
+/application/build*/
+/build*/
+/out/
+CMakeUserPresets.json
+/.vs/
+/application/.vs/
+*.user
+*.kicad_prl
+*-backups/
+fp-info-cache
+__pycache__/

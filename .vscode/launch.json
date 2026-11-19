@@ -1,0 +1,22 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "PainterBot Application (Release)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/application/out/windows-release/Release/PainterBot Application.exe",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "PainterBot: Build Release"
+        },
+        {
+            "name": "PainterBot Application with sample (Release)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/application/out/windows-release/Release/PainterBot Application.exe",
+            "args": ["${workspaceFolder}/application/tests/res/above-clouds-mountains-peak-sunrise-moon-winter-cold-scenic-3440x1440-4569.jpg"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "PainterBot: Build Release"
+        }
+    ]
+}

@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "C:/Meerkat/PainterBot/application"
+    "cmake.sourceDirectory": "${workspaceFolder}/application",
+    "cmake.useCMakePresets": "always"
 }

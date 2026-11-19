@@ -60,7 +60,7 @@
 
 ## 2.4 GIT
 
-- Initiate the GIT repository for this project
+- I initiated the GIT repository for this project
 - Set up gitignore, etc..
 
 # Expected outcome

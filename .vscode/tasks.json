@@ -1,0 +1,23 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "PainterBot: Configure Windows x64",
+            "type": "process",
+            "command": "cmake",
+            "args": ["--preset", "windows-release"],
+            "options": { "cwd": "${workspaceFolder}/application" },
+            "problemMatcher": []
+        },
+        {
+            "label": "PainterBot: Build Release",
+            "type": "process",
+            "command": "cmake",
+            "args": ["--build", "--preset", "windows-release", "--target", "PainterBot"],
+            "options": { "cwd": "${workspaceFolder}/application" },
+            "dependsOn": "PainterBot: Configure Windows x64",
+            "problemMatcher": "$msCompile",
+            "group": { "kind": "build", "isDefault": true }
+        }
+    ]
+}
