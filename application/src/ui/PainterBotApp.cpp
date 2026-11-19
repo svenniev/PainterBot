@@ -1,6 +1,7 @@
-#include "algo/ScanlineAlgorithm.h"
+#include "algo/VectorAlgorithm.h"
 #include "commands/CommandProcessor.h"
 #include "io/ImageLoader.h"
+#include "ui/VectorPanel.h"
 
 #include <wx/dcbuffer.h>
 #include <wx/graphics.h>
@@ -114,7 +115,7 @@ class MainFrame final : public wxFrame {
 public:
     MainFrame()
         : wxFrame(nullptr, wxID_ANY, "PainterBot Application")
-        , commands_(std::make_shared<CommandProcessor>(DecodeReferenceImage, std::make_unique<ScanlineAlgorithm>()))
+        , commands_(std::make_shared<CommandProcessor>(DecodeReferenceImage, std::make_unique<VectorAlgorithm>()))
         , workerTimer_(this)
     {
         SetClientSize(FromDIP(wxSize(1150, 665)));
@@ -204,30 +205,34 @@ private:
         return input;
     }
 
-    ImagePanel* AddPreview(wxWindow* page, wxSizer* row, const wxString& title, const wxString& placeholder)
+    template<class Panel = ImagePanel>
+    Panel* AddPreview(wxWindow* page, wxSizer* row, const wxString& title, const wxString& placeholder)
     {
         auto* column = new wxBoxSizer(wxVERTICAL);
         column->Add(new wxStaticText(page, wxID_ANY, title), 0, wxBOTTOM, FromDIP(6));
-        auto* panel = new ImagePanel(page, placeholder);
+        auto* panel = new Panel(page, placeholder);
         column->Add(panel, 1, wxEXPAND);
         row->Add(column, 1, wxEXPAND);
         return panel;
     }
 
-    Timeline AddTimeline(wxWindow* page, wxSizer* layout)
+    Timeline AddTimeline(wxWindow* page, wxSizer* layout, bool patches)
     {
         auto* row = new wxBoxSizer(wxHORIZONTAL);
-        row->Add(new wxStaticText(page, wxID_ANY, "Stroke sequence"), 0, wxALIGN_CENTER_VERTICAL);
+        const wxString caption = patches ? "Polygon sequence" : "Stroke sequence";
+        row->Add(new wxStaticText(page, wxID_ANY, caption), 0, wxALIGN_CENTER_VERTICAL);
         auto* slider = new wxSlider(page, wxID_ANY, 0, 0, 1);
-        slider->SetName("Stroke sequence");
+        slider->SetName(caption);
         row->Add(slider, 1, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(8));
         auto* label = new wxStaticText(page, wxID_ANY, "0 / 0", wxDefaultPosition, FromDIP(wxSize(108, -1)),
                                        wxALIGN_RIGHT | wxST_NO_AUTORESIZE);
         row->Add(label, 0, wxALIGN_CENTER_VERTICAL);
         layout->Add(row, 0, wxEXPAND | wxTOP, FromDIP(10));
-        slider->Bind(wxEVT_SLIDER, [this, slider](wxCommandEvent&) {
+        slider->Bind(wxEVT_SLIDER, [this, slider, patches](wxCommandEvent&) {
             if (!Busy()) {
-                commands_->Execute(SeekPreview{static_cast<std::size_t>(slider->GetValue())});
+                const auto count = static_cast<std::size_t>(slider->GetValue());
+                if (patches) commands_->Execute(SeekPatches{count});
+                else commands_->Execute(SeekPreview{count});
                 RenderProgress();
             }
         });
@@ -255,11 +260,11 @@ private:
         auto* previews = new wxBoxSizer(wxHORIZONTAL);
         reference_ = AddPreview(page, previews, "Reference", "Open a reference image");
         previews->AddSpacer(FromDIP(10));
-        quantized_ = AddPreview(page, previews, "Quantized", "Prepare a painting");
+        quantized_ = AddPreview<VectorPanel>(page, previews, "Vector artwork", "Prepare a painting");
         previews->AddSpacer(FromDIP(10));
-        preparePreview_ = AddPreview(page, previews, "Painting sequence", "Prepare a painting");
+        preparePreview_ = AddPreview<VectorPanel>(page, previews, "Polygon sequence", "Prepare a painting");
         content->Add(previews, 1, wxEXPAND);
-        prepareTimeline_ = AddTimeline(page, content);
+        prepareTimeline_ = AddTimeline(page, content, true);
         layout->Add(content, 1, wxEXPAND | wxALL, FromDIP(12));
         page->SetSizer(layout);
         notebook_->AddPage(page, "Prepare", true);
@@ -271,7 +276,7 @@ private:
         auto* layout = new wxBoxSizer(wxVERTICAL);
         auto* content = new wxBoxSizer(wxVERTICAL);
         plotPreview_ = AddPreview(page, content, "Plot simulation", "Prepare a painting in the Prepare tab");
-        plotTimeline_ = AddTimeline(page, content);
+        plotTimeline_ = AddTimeline(page, content, false);
         layout->Add(content, 1, wxEXPAND | wxALL, FromDIP(12));
         page->SetSizer(layout);
         notebook_->AddPage(page, "Plot");
@@ -297,7 +302,7 @@ private:
     {
         if (!Busy() && commands_->Model().ActiveDocument().reference) {
             StartWorker(Prepare{PaintSettings{width_->GetValue(), height_->GetValue(), colors_->GetValue()}},
-                        "Preparing brush strokes...");
+                        "Tracing polygons and planning brush strokes...");
         }
     }
 
@@ -392,17 +397,13 @@ private:
         }
         if (displayedPlan_ != document.plan) {
             displayedPlan_ = document.plan;
-            if (displayedPlan_) {
-                quantized_->SetContent(MakeBitmap(displayedPlan_->quantized), LayoutFor(*displayedPlan_));
-            } else {
-                quantized_->SetContent();
-            }
+            quantized_->SetPlan(displayedPlan_, displayedPlan_ ? displayedPlan_->segments.size() : 0);
         }
         RenderProgress();
         UpdateControls();
 
         if (document.plan) {
-            SetStatusText(wxString::Format("%zu colors  |  %zu segments  |  %zu strokes  |  %d mm brush",
+            SetStatusText(wxString::Format("%zu colors  |  %zu polygons  |  %zu strokes  |  %d mm brush",
                                           document.plan->palette.size(), document.plan->segments.size(),
                                           document.plan->strokes.size(), BrushWidthMm));
         } else if (document.reference) {
@@ -419,9 +420,7 @@ private:
     {
         const auto& document = commands_->Model().ActiveDocument();
         const auto* plan = document.plan.get();
-        const int count = plan ? static_cast<int>(plan->strokes.size()) : 0;
-        const int visible = static_cast<int>(document.visibleStrokes);
-        for (const auto& timeline : {prepareTimeline_, plotTimeline_}) {
+        const auto setTimeline = [](const Timeline& timeline, int count, int visible) {
             if (timeline.slider->GetMax() != std::max(1, count)) {
                 timeline.slider->SetRange(0, std::max(1, count));
             }
@@ -429,14 +428,17 @@ private:
                 timeline.slider->SetValue(visible);
             }
             timeline.label->SetLabel(wxString::Format("%d / %d", visible, count));
-        }
+        };
+        setTimeline(prepareTimeline_, plan ? static_cast<int>(plan->segments.size()) : 0,
+                    static_cast<int>(document.visiblePatches));
+        setTimeline(plotTimeline_, plan ? static_cast<int>(plan->strokes.size()) : 0,
+                    static_cast<int>(document.visibleStrokes));
+        preparePreview_->SetPlan(document.plan, document.visiblePatches);
         if (plan) {
-            const auto bitmap = MakeBitmap(plan->Preview(visible));
+            const auto bitmap = MakeBitmap(plan->Preview(document.visibleStrokes));
             const auto layout = LayoutFor(*plan);
-            preparePreview_->SetContent(bitmap, layout);
             plotPreview_->SetContent(bitmap, layout);
         } else {
-            preparePreview_->SetContent();
             plotPreview_->SetContent();
         }
     }
@@ -453,8 +455,8 @@ private:
     wxSpinCtrl* height_{};
     wxSpinCtrl* colors_{};
     ImagePanel* reference_{};
-    ImagePanel* quantized_{};
-    ImagePanel* preparePreview_{};
+    VectorPanel* quantized_{};
+    VectorPanel* preparePreview_{};
     ImagePanel* plotPreview_{};
     Timeline prepareTimeline_;
     Timeline plotTimeline_;

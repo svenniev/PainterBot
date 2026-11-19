@@ -19,6 +19,7 @@
         - Largest solid polygons go bottom layers (likely in the future this will be painted with thick brush - no need to support it for now)
         - smaller features going on top
         - for similar colors (e.g. different shades of the same color), I would like to have them painted in a 'from dimmest to brightest' order
+    - The aim is to perserve insane details down to the tiniest features to make stunning paintings
 
 # Tasks
 

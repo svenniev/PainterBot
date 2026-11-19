@@ -1,4 +1,8 @@
-#include "algo/ScanlineAlgorithm.h"
+#include "algo/VectorAlgorithm.h"
+#include "algo/ContourTracer.h"
+#include "algo/VectorIndex.h"
+#include <array>
+#include <utility>
 #include "commands/CommandProcessor.h"
 #include "io/ImageLoader.h"
 
@@ -34,6 +38,134 @@ void ExpectThrows(Operation operation)
     throw std::runtime_error("Expected command failure.");
 }
 
+// Independent even-odd containment check against the emitted vector rings.
+constexpr bool Contains(const VectorArtwork& art, const Segment& patch, double x, double y, bool pour = false)
+{
+    bool inside = false;
+    for (auto r = patch.firstRing; r < patch.firstRing+patch.ringCount; ++r) {
+        if (pour && art.paintThrough[r]) continue;
+        const auto end = art.ringOffsets[r+1];
+        Vertex a = art.vertices[end-1];
+        for (auto i = art.ringOffsets[r]; i < end; ++i) {
+            const Vertex b = art.vertices[i];
+            if ((a.y2 > y) != (b.y2 > y) && x < a.x2 + (y-a.y2)*(b.x2-a.x2)/(b.y2-a.y2))
+                inside = !inside;
+            a = b;
+        }
+    }
+    return inside;
+}
+
+constexpr bool CheckContours(int width, int height, const std::vector<std::uint16_t>& labels,
+                             int expectedPatches = 0, int expectedRings = 0)
+{
+    Raster source{width,height,{}};
+    PaintPlan plan;
+    plan.artwork.width = width;
+    plan.artwork.height = height;
+    detail::ContourTracer(source, labels, plan).Trace();
+    detail::IndexFills(plan);
+    detail::FindUndercoats(plan);
+    const auto& art = plan.artwork;
+    if (expectedPatches && plan.segments.size() != expectedPatches) return false;
+    if (expectedRings && art.ringOffsets.size() != expectedRings+1) return false;
+    double area = 0;
+    for (const auto& patch : plan.segments) {
+        if (patch.area <= 0) return false;
+        area += patch.area;
+    }
+    if (area != width*height) return false;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int owners = 0;
+            for (const auto& patch : plan.segments) {
+                if (!Contains(art, patch, 2*x+1, 2*y+1)) continue;
+                if (patch.paletteIndex != labels[y*width+x]) return false;
+                ++owners;
+            }
+            if (owners != 1) return false;
+            const auto owner = art.PatchAt(x+0.5,y+0.5);
+            if (plan.segments[owner].paletteIndex != labels[y*width+x]) return false;
+            std::uint32_t painted = Segment::NoUndercoat;
+            for (std::uint32_t i = 0; i < plan.segments.size(); ++i) {
+                if (Contains(art,plan.segments[i],2*x+1,2*y+1,true)) painted = i;
+                const auto base = plan.segments[owner].undercoat;
+                const auto expected = owner <= i ? owner : (base <= i ? base : Segment::NoUndercoat);
+                if (painted != expected) return false;
+            }
+            const auto edgeOwner = art.PatchAt(x+0.12,y+0.23);
+            if (!Contains(art,plan.segments[edgeOwner],2*x+0.24,2*y+0.46)) return false;
+        }
+    }
+    return true;
+}
+
+// These exercise the production tracer during compilation as well as in native tests.
+static_assert(CheckContours(3,3,{0,0,0, 0,1,0, 0,0,0}, 2, 3));
+static_assert(CheckContours(2,2,{0,1,1,0}, 4, 4));
+static_assert(CheckContours(3,2,{0,0,1, 2,0,1}, 3, 3));
+static_assert(CheckContours(3,3,{0,0,0, 0,1,0, 0,0,1}, 3));
+
+template<int Mask>
+constexpr bool BinaryContourCase = [] {
+    std::vector<std::uint16_t> labels;
+    for (int i = 0; i < 9; ++i) labels.push_back((Mask >> i) & 1);
+    return CheckContours(3, 3, labels);
+}();
+
+template<int... Masks>
+constexpr bool AllBinaryContours(std::integer_sequence<int, Masks...>)
+{
+    constexpr std::array<bool, sizeof...(Masks)> results{BinaryContourCase<Masks>...};
+    return std::all_of(results.begin(), results.end(), [](bool passed) { return passed; });
+}
+
+static_assert(AllBinaryContours(std::make_integer_sequence<int, 512>{}));
+
+void TestVectorDetail()
+{
+    VectorAlgorithm algorithm;
+    // Enumerate every binary 3x3 neighborhood, including self-touching rings and holes.
+    for (int mask = 0; mask < 512; ++mask) {
+        std::vector<std::uint16_t> labels;
+        for (int i = 0; i < 9; ++i) labels.push_back((mask >> i) & 1);
+        Check(CheckContours(3,3,labels), "The contour partition lost coverage or changed a source label.");
+        Raster input{3,3,{}};
+        for (auto label : labels) input.pixels.push_back(label ? Rgb{200,0,0} : Rgb{0,0,0});
+        const auto plan = algorithm.Prepare(input, {4,4,2});
+        for (int y = 0; y < 12; ++y) {
+            for (int x = 0; x < 12; ++x) {
+                const double sx = (x+0.27)/4, sy = (y+0.49)/4;
+                const auto& patch = plan.segments[plan.artwork.PatchAt(sx,sy)];
+                Check(Contains(plan.artwork,patch,2*sx,2*sy), "Vector scan conversion disagrees with polygon winding.");
+            }
+        }
+    }
+
+    Raster image{32,32,{}};
+    for (int i = 0; i < 1024; ++i)
+        image.pixels.push_back({std::uint8_t(i%32*8), std::uint8_t(i/32*8), 125});
+    const auto detailed = algorithm.Prepare(image, {4,4,1024});
+    Check(detailed.palette.size() == 1024 && detailed.segments.size() == 1024 && detailed.strokes.size() == 1,
+          "All 1024 single-pixel colors must survive on a one-brush-cell canvas.");
+    for (int y = 0; y < 32; ++y) {
+        for (int x = 0; x < 32; ++x) {
+            const auto id = detailed.artwork.PatchAt(x+0.5,y+0.5);
+            Check(detailed.palette[detailed.segments[id].paletteIndex].preview == image.pixels[y*32+x],
+                  "Exact source colors must survive when the palette has room.");
+        }
+    }
+    const auto reduced = algorithm.Prepare(image, {4,4,65});
+    Check(reduced.palette.size() > 32 && reduced.palette.size() <= 65, "Reduced palettes must respect limits above 32.");
+
+    Raster stripes{4,1,{{235,0,0},{160,0,0},{95,0,0},{40,0,0}}};
+    const auto ordered = algorithm.Prepare(stripes, {16,4,4});
+    for (int i = 0; i < 4; ++i) {
+        Check(ordered.palette[ordered.segments[i].paletteIndex].preview == stripes.pixels[3-i],
+              "Equal-area shades should paint from dimmest to brightest.");
+    }
+}
+
 void TestSegments()
 {
     constexpr Rgb blue{10, 30, 200};
@@ -43,20 +175,22 @@ void TestSegments()
     const Raster image{4, 3, {orange, blue, blue, blue,
                               blue, blue, orange, blue,
                               blue, blue, blue, blue}};
-    const ScanlineAlgorithm algorithm;
+    const VectorAlgorithm algorithm;
     const auto plan = algorithm.Prepare(image, {16, 12, 2});
     Check(plan.quantized.pixels == image.pixels, "Two-color quantization must preserve the source.");
     Check(plan.segments.size() == 3, "Disconnected islands must be separate segments.");
     Check(plan.segments[0].cellCount == 10, "The wide background must paint first.");
-    Check(plan.segments[0].firstStroke == 0 && plan.segments[0].strokeCount == 4,
-          "The background must include only its four runs.");
-    Check(plan.strokes[1].start.x > plan.strokes[2].start.x, "Odd rows must run from right to left.");
+    Check(plan.segments[0].firstStroke == 0 && plan.segments[0].strokeCount == 3,
+          "The background should cross the enclosed island in one run per row.");
+    Check(plan.strokes[1].start.x > plan.strokes[1].end.x, "Odd rows must run from right to left.");
     const auto empty = plan.Preview(0);
     Check(std::all_of(empty.pixels.begin(), empty.pixels.end(), [](Rgb pixel) { return pixel == blank; }),
           "Stroke zero must show blank canvas.");
-    const auto background = plan.Preview(4);
-    Check(background.pixels[0] == blank && background.pixels[6] == blank && background.pixels[1] == blue,
-          "The preview must reveal only cells covered by completed strokes.");
+    const auto background = plan.Preview(3);
+    Check(background.pixels[0] == blank && background.pixels[6] == blue && background.pixels[1] == blue,
+          "The enclosed detail should show its blue undercoat before the orange overpaint.");
+    const auto island = plan.artwork.PatchAt(2.5,1.5);
+    Check(plan.segments[island].undercoat == 0, "The enclosed orange island should have a blue undercoat.");
     Check(plan.Preview(plan.strokes.size()).pixels == plan.quantized.pixels,
           "The final sequence frame must match the quantized image.");
 
@@ -98,7 +232,7 @@ void TestImageFormats()
 
 void TestSampleAndCommands(const std::filesystem::path& file)
 {
-    CommandProcessor commands(DecodeReferenceImage, std::make_unique<ScanlineAlgorithm>());
+    CommandProcessor commands(DecodeReferenceImage, std::make_unique<VectorAlgorithm>());
     auto run = [&](std::string_view command) { commands.Execute(ParseCommand(command)); };
     const auto& document = commands.Model().ActiveDocument();
     ExpectThrows<std::runtime_error>([&] { run("prepare"); });
@@ -111,7 +245,7 @@ void TestSampleAndCommands(const std::filesystem::path& file)
     Check(document.reference->thumbnail.width == 1000, "The reference preview must use a bounded thumbnail.");
     ExpectThrows<std::invalid_argument>([&] { run("prepare 1001 550 12"); });
     ExpectThrows<std::invalid_argument>([&] { run("prepare 1000 551 12"); });
-    ExpectThrows<std::invalid_argument>([&] { run("prepare 1000 550 33"); });
+    ExpectThrows<std::invalid_argument>([&] { run("prepare 1000 550 1025"); });
     Check(!document.plan && document.settings == PaintSettings{}, "Rejected settings must leave the document intact.");
 
     run("prepare 1000 550 16");
@@ -128,7 +262,7 @@ void TestSampleAndCommands(const std::filesystem::path& file)
     }
 
     const auto [first, last] = std::minmax_element(prepared->strokeAtCell.begin(), prepared->strokeAtCell.end());
-    Check(first != prepared->strokeAtCell.end() && *first == 1 && *last == prepared->strokes.size(),
+    Check(first != prepared->strokeAtCell.end() && *first >= 1 && *last == prepared->strokes.size(),
           "Each brush cell must have a valid stroke number.");
     std::size_t nextStroke = 0;
     std::size_t coveredCells = 0;
@@ -146,6 +280,12 @@ void TestSampleAndCommands(const std::filesystem::path& file)
         }
     }
 
+    run("seek-patch 0");
+    Check(document.visiblePatches == 0 && document.visibleStrokes == 0, "The first polygon frame must be empty.");
+    run("seek-patch 1");
+    Check(document.visiblePatches == 1 && document.visibleStrokes == prepared->segments[0].strokeCount,
+          "The polygon playhead must advance physical strokes through the same completed patches.");
+    ExpectThrows<std::invalid_argument>([&] { run("seek-patch 999999999"); });
     run("tab plot");
     run("seek 1");
     Check(commands.Model().SelectedTab() == Tab::Plot && document.visibleStrokes == 1,
@@ -161,6 +301,8 @@ void TestSampleAndCommands(const std::filesystem::path& file)
 
     run("undo");
     run("prepare 1000 550 16");
+    Check(document.plan->artwork.vertices == prepared->artwork.vertices && document.plan->artwork.ringOffsets == prepared->artwork.ringOffsets,
+          "Repeating preparation must reproduce vector rings.");
     Check(!commands.CanRedo() && document.plan->strokes == prepared->strokes
           && document.plan->quantized.pixels == prepared->quantized.pixels,
           "Preparing again must branch history and reproduce the same plan.");
@@ -181,6 +323,7 @@ int main(int argc, char** argv)
         wxInitializer wx;
         Check(wx.IsOk() && argc == 2, "Expected wxWidgets initialization and the sample image argument.");
         wxInitAllImageHandlers();
+        TestVectorDetail();
         TestSegments();
         TestImageFormats();
         TestSampleAndCommands(argv[1]);

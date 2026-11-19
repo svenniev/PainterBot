@@ -19,7 +19,8 @@ FetchContent_Declare(wxwidgets
 FetchContent_MakeAvailable(wxwidgets)
 
 add_library(painterbot_core STATIC
-    src/algo/ScanlineAlgorithm.cpp
+    src/algo/VectorAlgorithm.cpp
+    src/algo/Palette.cpp
     src/commands/CommandProcessor.cpp
     src/viewmodel/viewmodel.cpp
 )
@@ -29,7 +30,7 @@ target_compile_features(painterbot_core PUBLIC cxx_std_20)
 add_library(painterbot_image_io STATIC src/io/ImageLoader.cpp)
 target_link_libraries(painterbot_image_io PUBLIC painterbot_core PRIVATE wx::core)
 
-add_executable(PainterBot WIN32 src/ui/PainterBotApp.cpp)
+add_executable(PainterBot WIN32 src/ui/PainterBotApp.cpp src/ui/VectorPanel.cpp)
 if(WIN32)
     target_sources(PainterBot PRIVATE src/ui/PainterBot.rc)
     if(MSVC)

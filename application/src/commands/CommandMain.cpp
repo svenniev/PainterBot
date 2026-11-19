@@ -1,4 +1,4 @@
-#include "algo/ScanlineAlgorithm.h"
+#include "algo/VectorAlgorithm.h"
 #include "commands/CommandProcessor.h"
 #include "io/ImageLoader.h"
 
@@ -27,7 +27,8 @@ void PrintStatus(const ViewModel& model)
     }
     if (plan) {
         std::cout << " colors=" << plan->palette.size() << " segments=" << plan->segments.size()
-                  << " strokes=" << plan->strokes.size() << " visible=" << document.visibleStrokes;
+                  << " strokes=" << plan->strokes.size() << " visible=" << document.visibleStrokes
+                  << " visible_patches=" << document.visiblePatches;
     }
     std::cout << '\n';
 }
@@ -54,6 +55,34 @@ void PrintPlan(const ViewModel& model)
     }
 }
 
+void PrintVectors(const Document& document)
+{
+    if (!document.plan) throw std::runtime_error("Prepare a painting before requesting its polygons.");
+    const auto& plan = *document.plan;
+    const auto& art = plan.artwork;
+    std::cout << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << plan.settings.widthMm
+              << "mm\" height=\"" << plan.settings.heightMm << "mm\">\n"
+              << "<rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n"
+              << "<svg width=\"100%\" height=\"100%\" viewBox=\"0 0 "
+              << 2*art.width << ' ' << 2*art.height << "\">\n";
+    for (std::size_t i = 0; i < document.visiblePatches; ++i) {
+        const auto& p = plan.segments[i];
+        const auto color = plan.palette[p.paletteIndex].preview;
+        std::cout << "<path fill=\"rgb(" << int(color.red) << ',' << int(color.green) << ',' << int(color.blue)
+                  << ")\" fill-rule=\"evenodd\" d=\"";
+        for (auto r = p.firstRing; r < p.firstRing + p.ringCount; ++r) {
+            if (art.paintThrough[r]) continue;
+            for (auto j = art.ringOffsets[r]; j < art.ringOffsets[r+1]; ++j) {
+                const auto v = art.vertices[j];
+                std::cout << (j == art.ringOffsets[r] ? "M" : " ") << v.x2 << ' ' << v.y2;
+            }
+            std::cout << 'Z';
+        }
+        std::cout << "\"/>\n";
+    }
+    std::cout << "</svg>\n</svg>\n";
+}
+
 void PrintPreview(const ViewModel& model)
 {
     const auto& document = model.ActiveDocument();
@@ -71,10 +100,12 @@ void PrintPreview(const ViewModel& model)
 
 int main(int argc, char** argv)
 {
+    std::ios::sync_with_stdio(false);
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
         std::cout << "PainterBotCommand reads UTF-8 commands from stdin, one per line.\n"
-                     "  load \"PATH\"\n  prepare [WIDTH_MM HEIGHT_MM COLORS]\n  seek STROKE_COUNT\n"
+                     "  load \"PATH\"\n  prepare [WIDTH_MM HEIGHT_MM COLORS]\n  seek STROKE_COUNT\n  seek-patch PATCH_COUNT\n"
                      "  tab prepare|plot\n  undo\n  redo\n  status\n"
+                     "  vectors  Print the visible polygon layers as SVG.\n"
                      "  plan     Print the ordered strokes as CSV.\n"
                      "  preview  Print the current brush grid as a PPM image.\n";
         return 0;
@@ -90,7 +121,7 @@ int main(int argc, char** argv)
         return 1;
     }
     wxInitAllImageHandlers();
-    CommandProcessor processor(DecodeReferenceImage, std::make_unique<ScanlineAlgorithm>());
+    CommandProcessor processor(DecodeReferenceImage, std::make_unique<VectorAlgorithm>());
     std::string line;
     for (std::size_t number = 1; std::getline(std::cin, line); ++number) {
         if (number == 1 && line.starts_with("\xef\xbb\xbf")) {
@@ -105,6 +136,8 @@ int main(int argc, char** argv)
         try {
             if (command == "status") {
                 PrintStatus(processor.Model());
+            } else if (command == "vectors") {
+                PrintVectors(processor.Model().ActiveDocument());
             } else if (command == "plan") {
                 PrintPlan(processor.Model());
             } else if (command == "preview") {

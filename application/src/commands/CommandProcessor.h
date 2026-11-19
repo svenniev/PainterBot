@@ -22,6 +22,10 @@ struct SeekPreview {
     std::size_t strokeCount;
 };
 
+struct SeekPatches {
+    std::size_t count;
+};
+
 struct SelectTab {
     Tab tab;
 };
@@ -29,7 +33,7 @@ struct SelectTab {
 struct Undo {};
 struct Redo {};
 
-using Command = std::variant<LoadReference, Prepare, SeekPreview, SelectTab, Undo, Redo>;
+using Command = std::variant<LoadReference, Prepare, SeekPreview, SeekPatches, SelectTab, Undo, Redo>;
 using ImageLoader = std::function<ReferenceImage(const std::filesystem::path&)>;
 
 [[nodiscard]] Command ParseCommand(std::string_view line);
@@ -51,6 +55,7 @@ private:
     void ExecuteOne(const LoadReference& command, std::stop_token stop);
     void ExecuteOne(const Prepare& command, std::stop_token stop);
     void ExecuteOne(const SeekPreview& command, std::stop_token stop);
+    void ExecuteOne(const SeekPatches& command, std::stop_token stop);
     void ExecuteOne(const SelectTab& command, std::stop_token stop);
     void ExecuteOne(Undo, std::stop_token stop);
     void ExecuteOne(Redo, std::stop_token stop);

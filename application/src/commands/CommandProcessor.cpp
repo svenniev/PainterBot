@@ -1,5 +1,6 @@
 #include "commands/CommandProcessor.h"
 
+#include <algorithm>
 #include <charconv>
 #include <stdexcept>
 #include <utility>
@@ -97,6 +98,11 @@ Command ParseCommand(std::string_view line)
         RequireEnd(line);
         return Prepare{settings};
     }
+    if (command == "seek-patch") {
+        const auto count = ReadNumber<std::size_t>(line);
+        RequireEnd(line);
+        return SeekPatches{count};
+    }
     if (command == "seek") {
         const auto count = ReadNumber<std::size_t>(line);
         RequireEnd(line);
@@ -169,7 +175,8 @@ void CommandProcessor::ExecuteOne(const Prepare& command, std::stop_token stop)
     auto plan = std::make_shared<const PaintPlan>(algorithm_->Prepare(document.reference->source, settings, stop));
     CheckCancellation(stop);
     const auto strokeCount = plan->strokes.size();
-    Commit({document.reference, settings, std::move(plan), strokeCount});
+    const auto patchCount = plan->segments.size();
+    Commit({document.reference, settings, std::move(plan), strokeCount, patchCount});
 }
 
 void CommandProcessor::ExecuteOne(const SeekPreview& command, std::stop_token)
@@ -179,7 +186,32 @@ void CommandProcessor::ExecuteOne(const SeekPreview& command, std::stop_token)
     if (command.strokeCount > strokeCount) {
         throw std::invalid_argument("Preview position is outside the painting sequence.");
     }
-    ValueAction(document.visibleStrokes, command.strokeCount).Do();
+    Document next = document;
+    next.visibleStrokes = command.strokeCount;
+    if (document.plan && command.strokeCount > 0) {
+        const auto& patches = document.plan->segments;
+        const auto last = std::upper_bound(patches.begin(), patches.end(), command.strokeCount,
+            [](std::size_t count, const Segment& patch) { return count < patch.firstStroke + patch.strokeCount; });
+        next.visiblePatches = last - patches.begin();
+    } else {
+        next.visiblePatches = 0;
+    }
+    ValueAction(document, std::move(next)).Do();
+}
+
+void CommandProcessor::ExecuteOne(const SeekPatches& command, std::stop_token)
+{
+    auto& document = model_.document_;
+    if (command.count > (document.plan ? document.plan->segments.size() : 0))
+        throw std::invalid_argument("Patch position is outside the painting sequence.");
+    Document next = document;
+    next.visiblePatches = command.count;
+    next.visibleStrokes = 0;
+    if (command.count) {
+        const auto& patch = document.plan->segments[command.count - 1];
+        next.visibleStrokes = patch.firstStroke + patch.strokeCount;
+    }
+    ValueAction(document, std::move(next)).Do();
 }
 
 void CommandProcessor::ExecuteOne(const SelectTab& command, std::stop_token)
